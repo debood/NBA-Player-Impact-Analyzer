@@ -322,7 +322,7 @@ def create_team_box_score(player_box: pd.DataFrame) -> pd.DataFrame:
         }
     ])
 
-    team_box["FG%"] = team_box["FGM"] / team_box["FGA"].replace(0, np.nan)
+    team_box["FG%"] = (team_box["FGM"] / team_box["FGA"] * 100).replace(0, np.nan)
     return team_box.round(3)
 
 
