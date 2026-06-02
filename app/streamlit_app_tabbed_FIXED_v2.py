@@ -236,7 +236,7 @@ def project_final_score(team_a_scores: dict, team_b_scores: dict) -> tuple[int, 
     """Convert the lineup score difference into a projected final score."""
     base_score = 112
     score_gap = team_a_scores["lineup_score"] - team_b_scores["lineup_score"]
-    projected_margin = score_gap * 28
+    projected_margin = score_gap * 75
 
     team_a_points = base_score + projected_margin / 2
     team_b_points = base_score - projected_margin / 2
