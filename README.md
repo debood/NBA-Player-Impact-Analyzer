@@ -1,34 +1,363 @@
-# 🏀 Passion Prokect: Data Insights & Visualization Project
+# 🏀 NBA Player Impact Analyzer
 
-<img width="768" height="432" alt="image" src="https://github.com/user-attachments/assets/6408c740-1570-427c-8727-894a612a9d60" />
+A Streamlit basketball analytics app that lets users build two custom NBA rotations, compare lineup strengths, view player headshots, and generate a projected final score with team and player box scores.
 
-
-## 📘 Overview
-Welcome to **my Passion Project**, a collection of data analysis and visualization projects created to explore real-world datasets and practice storytelling with data.  
-This repository was developed for a **class project**, where the goal was to demonstrate technical fluency, creativity, and clarity in presenting data insights.
+This project started as a player analysis notebook and was later developed into a cleaner dashboard-style product. The final version is designed to show both basketball understanding and data analytics skills: data cleaning, player profiling, feature engineering, weighted scoring, interactive app development, and clear communication of model limitations.
 
 ---
 
-## 🧠 Objectives
-- Apply core **data analytics skills** — cleaning, transformation, and exploration.  
-- Use **Python, SQL, and visualization tools** to uncover trends and patterns.  
-- Strengthen ability to communicate insights effectively to non-technical audiences.  
+## Project Snapshot
+
+| Item | Description |
+|---|---|
+| Project type | Sports analytics dashboard |
+| Main tool | Streamlit |
+| Language | Python |
+| Data format | CSV + raw Excel files |
+| Main output | Custom NBA lineup comparison and projected matchup results |
+| Audience | Basketball fans, analysts, coaches, recruiters, and portfolio reviewers |
 
 ---
 
-## 🛠️ Tools & Technologies
-- **Python**: Pandas, NumPy, Matplotlib, Seaborn  
-- **Git / GitHub**: Version control and collaboration  
-- **Jupyter Notebooks**: Exploratory analysis and reporting  
+## Why I Built This
+
+NBA conversations usually focus on individual stars, but actual games are decided by how players fit together. A lineup with five high scorers might still struggle if it lacks spacing, defense, rebounding, or playmaking balance.
+
+This app was built to answer a simple basketball question:
+
+> If I create two custom NBA rotations, which group looks stronger based on player impact metrics?
+
+The goal is not to predict real games perfectly. The goal is to create an interactive tool that turns player-level data into a clear matchup comparison.
 
 ---
 
-## 📁 Repository Structure
+## What the App Does
 
-## 📊 Sample Topics
-This repo includes mini-projects and analyses on themes such as:
-- Sports analytics (e.g., NBA trends, team performance)
+Users can:
 
-Each project applies end-to-end reasoning — from **data preparation** to **insight presentation**.
+- Select a starting five for Team A and Team B
+- Add up to five optional bench players for each team
+- View NBA player headshots directly in the app
+- Compare two custom rotations across offense, defense, spacing, playmaking, and rebounding
+- Generate a projected final score and projected winner
+- View projected team box scores
+- View projected player box scores
+- Receive a warning if the same player is selected more than once
 
+---
 
+## Demo Workflow
+
+A typical use case looks like this:
+
+1. Choose five starters for Team A.
+2. Choose five starters for Team B.
+3. Optionally add bench players for either team.
+4. Review the projected score and winner.
+5. Compare team strengths in the matchup breakdown chart.
+6. Review the projected box score to see how points, rebounds, assists, steals, and blocks are distributed.
+
+---
+
+## Data
+
+The main app uses:
+
+```text
+/data/processed/player_profiles_final.csv
+```
+
+This final dataset contains player-level profile metrics, including scoring, efficiency, playmaking, rebounding, defensive impact, lineup role, and NBA player IDs for headshots.
+
+Important columns include:
+
+| Column | Purpose |
+|---|---|
+| `playerName` | Player display name |
+| `personId` | NBA player ID used for headshot URLs |
+| `lineup_role` | Player role label used in the app |
+| `lineup_score` | Overall player impact score used in matchup calculations |
+| `offensive_creation` | Scoring and creation value |
+| `lineup_defensive_impact` | Defensive value estimate |
+| `spacing_value` | Shooting and floor-spacing value |
+| `playmaking_value` | Passing and creation value |
+| `rebounding_value` | Rebounding value |
+| `points_generated_by_assists` | Assist creation proxy for box score projection |
+| `scorer_profile` | Player scoring style/category |
+| `defensive_profile` | Player defensive profile/category |
+
+Raw source files are stored in:
+
+```text
+/data/raw/
+```
+
+These files are kept for transparency and future development, while the Streamlit app runs from the cleaned final CSV.
+
+---
+
+## Methodology
+
+### 1. Player Profiling
+
+The project combines multiple player-level statistics into broader basketball categories. Instead of only looking at points per game, the app tries to represent different ways a player can help a lineup:
+
+- scoring and offensive creation
+- defensive impact
+- spacing
+- playmaking
+- rebounding
+
+### 2. Lineup Scoring
+
+For each selected rotation, the app calculates the average value for each category. Those values are min-max scaled against the full player pool so the categories can be compared on the same scale.
+
+The final lineup score uses this weighting system:
+
+| Category | Weight |
+|---|---:|
+| Offense | 40% |
+| Defense | 25% |
+| Spacing | 15% |
+| Playmaking | 10% |
+| Rebounding | 10% |
+
+The formula is:
+
+```text
+lineup_score =
+    offense_score * 0.40 +
+    defense_score * 0.25 +
+    spacing_score * 0.15 +
+    playmaking_score * 0.10 +
+    rebounding_score * 0.10
+```
+
+### 3. Projected Score
+
+The app compares the two lineup scores, converts the difference into an estimated scoring margin, and centers the final score around a base NBA-style team score.
+
+Projected scores are capped within a realistic range so extreme lineup score differences do not create unrealistic results.
+
+### 4. Projected Box Score
+
+The box score is generated by distributing team totals across players using profile-based weights. Starters are assigned more minutes than bench players, then the app estimates points, assists, rebounds, steals, blocks, field goals made, and field goal attempts.
+
+This is a simplified projection system, not a possession-level simulation.
+
+---
+
+## App Features in Detail
+
+### Custom Team Builder
+
+The app uses Streamlit multiselect inputs so users can create any two lineups from the player pool. Starters are required, but bench players are optional.
+
+### Player Cards
+
+Each selected player is displayed with:
+
+- NBA headshot
+- player name
+- lineup role
+- lineup score
+
+### Duplicate Player Warning
+
+The app allows duplicate players because users may want to experiment, but it warns them that the matchup may be less realistic.
+
+### Matchup Breakdown Chart
+
+A Plotly grouped bar chart compares Team A and Team B across the five main lineup categories.
+
+### Projected Box Score
+
+The app creates both:
+
+- a team-level box score
+- a player-level box score
+
+This makes the output feel more like an actual basketball matchup rather than only a model score.
+
+---
+
+## Tech Stack
+
+| Tool | How it is used |
+|---|---|
+| Python | Main programming language |
+| Pandas | Data loading, cleaning, filtering, and box score calculations |
+| NumPy | Numeric calculations and conditional logic |
+| Streamlit | Interactive web app/dashboard |
+| Plotly Express | Matchup breakdown visualization |
+| Jupyter Notebook | Exploration, cleaning, and player profile development |
+
+---
+
+## Project Structure
+
+```text
+nba-player-impact-analyzer/
+├── app/
+│   └── streamlit_app.py
+├── data/
+│   ├── processed/
+│   │   └── player_profiles_final.csv
+│   └── raw/
+│       ├── pbp.xls
+│       └── shotprofile.xls
+├── docs/
+│   ├── project_cleanup_notes.md
+│   └── resume_notes.md
+├── notebooks/
+│   └── nba_player_analysis.ipynb
+├── .gitignore
+├── CHANGELOG.md
+├── README.md
+└── requirements.txt
+```
+
+---
+
+## Run Locally
+
+### 1. Clone the repo
+
+```bash
+git clone <your-repo-url>
+cd nba-player-impact-analyzer
+```
+
+### 2. Create and activate a virtual environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+On Windows:
+
+```bash
+.venv\Scripts\activate
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Run the app
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+---
+
+## Version History
+
+### Version 1.0 — Notebook Exploration
+
+- Explored NBA player statistics in a Jupyter Notebook
+- Cleaned and joined player-level datasets
+- Created early player impact metrics
+- Tested different ways to compare players beyond traditional box score stats
+
+### Version 2.0 — Player Profiles and Impact Score
+
+- Added player profile categories
+- Built player-level scoring, spacing, defense, playmaking, and rebounding values
+- Created a more complete final player profile dataset
+- Added lineup role labels and overall lineup score
+
+### Version 3.0 — Streamlit Matchup App
+
+- Built the first full Streamlit version of the project
+- Added Team A vs Team B lineup selection
+- Added optional bench players
+- Added projected final score and winner
+- Added projected team and player box scores
+- Added matchup comparison chart
+
+### Version 3.1 — GitHub Cleanup and Portfolio Version
+
+- Reorganized the repo into a cleaner project structure
+- Moved the app, data, notebooks, and docs into clear folders
+- Added a clearer README
+- Added `requirements.txt`
+- Removed unnecessary app dependency on `nba_api`
+- Built player headshot URLs directly from `personId`
+- Added stronger documentation for methodology, limitations, and resume use
+
+---
+
+## Resume-Friendly Summary
+
+**NBA Player Impact Analyzer** — Built an interactive Streamlit app that compares custom NBA lineups using player-level scoring, spacing, playmaking, rebounding, and defensive impact metrics. Engineered a weighted lineup score, generated projected final scores and box scores, and designed a dashboard interface with player cards, NBA headshots, and matchup visualizations.
+
+Possible resume bullet:
+
+> Built an interactive NBA lineup comparison app in Python and Streamlit, using player-level impact metrics to project matchup results, generate box scores, and visualize lineup strengths across offense, defense, spacing, playmaking, and rebounding.
+
+---
+
+## Skills Demonstrated
+
+This project demonstrates:
+
+- Data cleaning and preprocessing
+- Feature engineering
+- Dashboard development
+- Sports analytics thinking
+- Interactive user interface design
+- Weighted scoring methodology
+- Data visualization
+- Python project organization
+- Technical documentation
+- Communicating model assumptions and limitations
+
+---
+
+## Notes and Limitations
+
+This is an exploratory basketball analytics project, not a betting model or a production-grade prediction model.
+
+The current version does not account for:
+
+- injuries
+- trades or current roster context
+- opponent schemes
+- coaching strategy
+- pace differences
+- player chemistry
+- recent form
+- home-court advantage
+- possession-level play-by-play simulation
+
+Because of this, the projected score should be interpreted as a simplified comparison of player profiles, not a guaranteed game prediction.
+
+---
+
+## Future Improvements
+
+Planned or possible improvements:
+
+- Add real team names and logos
+- Add filters by team, position, role, or archetype
+- Add a player profile page
+- Add Streamlit deployment link
+- Add screenshots or GIF demo to the README
+- Add historical validation against real game outcomes
+- Add salary-cap or fantasy-style lineup constraints
+- Improve box score projection with pace and usage adjustments
+- Add possession-level simulation logic
+- Add model evaluation metrics for matchup prediction accuracy
+
+---
+
+## Project Status
+
+Current status: **Portfolio-ready cleanup version**
+
+The app is functional as a local Streamlit project and structured for GitHub/resume presentation. The next best improvement would be deploying it on Streamlit Community Cloud and adding screenshots to this README.

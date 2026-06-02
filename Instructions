@@ -1,3 +1,0 @@
-Throughout the file are static codes that you can use to analyze data files. At the end is a code using user-input where you can enter the 
-name of a csv, that has already been downloaded from basketball-reference.com, and formatted to remove any empty whitespace, and it will name
-the top performers from certain statistics, and predict the MVP for that season. As of now, this program is 1/1 (100%) in it's predictions!
