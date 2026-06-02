@@ -323,7 +323,7 @@ def create_team_box_score(player_box: pd.DataFrame) -> pd.DataFrame:
     ])
 
     team_box["FG%"] = (team_box["FGM"] / team_box["FGA"] * 100).replace(0, np.nan)
-    return team_box.round(3)
+    return team_box.round(1)
 
 
 def show_player_card(player: pd.Series, image_width: int = 115) -> None:
