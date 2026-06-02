@@ -18,7 +18,7 @@ st.set_page_config(
 # project/
 # ├── app/streamlit_app.py
 # └── data/processed/player_profiles_final.csv
-DATA_PATH = Path("/Users/Marcy_Student/Desktop/NBA project/notebooks/data/processed/player_profiles_final.csv")
+DATA_PATH = Path("/Users/Marcy_Student/Desktop/NBA project (gh)/notebooks/data/processed/player_profiles_final.csv")
 
 # Backup paths in case you run this file from a different folder while testing.
 FALLBACK_DATA_PATHS = [
