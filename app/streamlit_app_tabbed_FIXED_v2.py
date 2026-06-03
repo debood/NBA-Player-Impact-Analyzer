@@ -261,23 +261,80 @@ def create_projected_box_score(rotation: pd.DataFrame, target_team_points: int) 
     if total_minutes > 0:
         box["MIN"] = box["MIN"] * (240 / total_minutes)
 
-    box["point_weight"] = (
-        box["offensive_creation"].fillna(0) * 0.70
-        + box["lineup_score"].fillna(0) * 30
-    )
-    if box["point_weight"].sum() == 0:
-        box["point_weight"] = 1
+    # -----------------------------
+    # POINTS / SHOTS LOGIC
+    # -----------------------------
+    # Use shot-taking stats first, so high-volume scorers shoot more.
+    # Fallback to offensive creation if shot-volume columns are missing.
+    shot_volume_col = None
 
-    box["PTS"] = (box["point_weight"] / box["point_weight"].sum()) * target_team_points
+    for col in ["usg_pct", "usage_pct", "pct_usg", "fga", "FGA", "avg_fga", "field_goal_attempts"]:
+        if col in box.columns:
+            shot_volume_col = col
+            break
 
+    if shot_volume_col:
+        box["shot_weight"] = box[shot_volume_col].fillna(0)
+    else:
+        box["shot_weight"] = (
+            box["offensive_creation"].fillna(0) * 0.60
+            + box["lineup_score"].fillna(0) * 20
+        )
+
+    # Keep weights from going negative
+    box["shot_weight"] = box["shot_weight"].clip(lower=0)
+
+    # Give starters a little more shot opportunity than bench players
+    box["shot_weight"] = box["shot_weight"] * (box["MIN"] / box["MIN"].mean())
+
+    if box["shot_weight"].sum() == 0:
+        box["shot_weight"] = 1
+
+    # Team FGA estimate
+    team_fga = target_team_points / 1.12
+
+    box["FGA"] = (box["shot_weight"] / box["shot_weight"].sum()) * team_fga
+
+    # Use TS% to estimate points from shot attempts
+    if "ts_pct" in box.columns:
+        box["efficiency"] = box["ts_pct"].replace(0, np.nan).fillna(0.55)
+    else:
+        box["efficiency"] = 0.55
+
+    box["efficiency"] = box["efficiency"].clip(lower=0.45, upper=0.70)
+
+    box["PTS_raw"] = box["FGA"] * box["efficiency"] * 2.05
+
+    if box["PTS_raw"].sum() > 0:
+        box["PTS"] = (box["PTS_raw"] / box["PTS_raw"].sum()) * target_team_points
+    else:
+        box["PTS"] = target_team_points / len(box)
+
+    box["FGM"] = box["PTS"] / 2.25
+
+    # -----------------------------
+    # ASSISTS
+    # -----------------------------
     box["AST"] = box["points_generated_by_assists"].fillna(0)
+
+    # No negative assists
+    box["AST"] = box["AST"].clip(lower=0)
+
     box["AST"] = (box["AST"] / box["AST"].sum()) * 25 if box["AST"].sum() > 0 else 0
 
+    # -----------------------------
+    # REBOUNDS
+    # -----------------------------
     box["REB"] = box["pct_reb"].fillna(0)
+
+    # No negative rebounds
+    box["REB"] = box["REB"].clip(lower=0)
+
     box["REB"] = (box["REB"] / box["REB"].sum()) * 44 if box["REB"].sum() > 0 else 0
 
-    # Better steals/blocks logic
-    # First try actual steal/block columns. If they do not exist, estimate from defensive stats.
+    # -----------------------------
+    # STEALS / BLOCKS
+    # -----------------------------
     steal_col = None
     for col in ["stl", "STL", "steals", "pct_stl", "stl_pct", "steal_pct"]:
         if col in box.columns:
@@ -303,7 +360,10 @@ def create_projected_box_score(rotation: pd.DataFrame, target_team_points: int) 
             + box["rebounding_value"].fillna(0) * 0.30
         )
 
-    # Convert weights into team-level projected steals/blocks
+    # This is the fix for negative steals/blocks
+    box["STL_weight"] = box["STL_weight"].clip(lower=0)
+    box["BLK_weight"] = box["BLK_weight"].clip(lower=0)
+
     if box["STL_weight"].sum() > 0:
         box["STL"] = (box["STL_weight"] / box["STL_weight"].sum()) * 7
     else:
@@ -314,13 +374,16 @@ def create_projected_box_score(rotation: pd.DataFrame, target_team_points: int) 
     else:
         box["BLK"] = 5 / len(box)
 
-    box["FGM"] = box["PTS"] / 2.25
-    box["FGA"] = box["FGM"] / box["ts_pct"].replace(0, np.nan).fillna(0.55)
+    # Extra safety: no negative box score stats
+    for col in ["PTS", "REB", "AST", "STL", "BLK", "FGM", "FGA"]:
+        if col in box.columns:
+            box[col] = box[col].clip(lower=0)
 
-    # Minutes can have decimals
+    # -----------------------------
+    # ROUNDING
+    # -----------------------------
     box["MIN"] = box["MIN"].round(1)
 
-    # Counting stats should be whole numbers
     for column in ["PTS", "AST", "REB", "STL", "BLK", "FGM", "FGA"]:
         if column in box.columns:
             box[column] = box[column].round(0).astype(int)
@@ -342,6 +405,7 @@ def create_projected_box_score(rotation: pd.DataFrame, target_team_points: int) 
         "scorer_profile",
         "defensive_profile",
     ]
+
     display_columns = available_columns(box, display_columns)
 
     return box[display_columns]
