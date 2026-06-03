@@ -829,20 +829,62 @@ def show_player_profiles_tab(df: pd.DataFrame) -> None:
         st.write(player.get("defensive_profile", "N/A"))
         st.write(player.get("defensive_description", ""))
 
-    st.subheader("Player Metrics")
-    player_metrics = pd.DataFrame(
-        {
-            "Metric": ["Offense", "Defense", "Spacing", "Playmaking", "Rebounding"],
-            "Value": [
-                player.get("offensive_creation", np.nan),
-                player.get("lineup_defensive_impact", np.nan),
-                player.get("spacing_value", np.nan),
-                player.get("playmaking_value", np.nan),
-                player.get("rebounding_value", np.nan),
-            ],
-        }
+        st.subheader("Player Metrics vs League Average")
+
+    metric_map = {
+        "Offense": "offensive_creation",
+        "Defense": "lineup_defensive_impact",
+        "Spacing": "spacing_value",
+        "Playmaking": "playmaking_value",
+        "Rebounding": "rebounding_value",
+    }
+
+    metric_rows = []
+
+    for metric_name, column_name in metric_map.items():
+        league_min = df[column_name].min()
+        league_max = df[column_name].max()
+        league_avg_raw = df[column_name].mean()
+        player_raw = player.get(column_name, np.nan)
+
+        if league_max == league_min:
+            player_scaled = 0
+            league_avg_scaled = 0
+        else:
+            player_scaled = ((player_raw - league_min) / (league_max - league_min)) * 100
+            league_avg_scaled = ((league_avg_raw - league_min) / (league_max - league_min)) * 100
+
+        metric_rows.append(
+            {
+                "Metric": metric_name,
+                "Group": selected_player,
+                "Score": player_scaled,
+                "Raw Value": player_raw,
+            }
+        )
+
+        metric_rows.append(
+            {
+                "Metric": metric_name,
+                "Group": "League Average",
+                "Score": league_avg_scaled,
+                "Raw Value": league_avg_raw,
+            }
+        )
+
+    player_metrics = pd.DataFrame(metric_rows)
+
+    fig = px.bar(
+        player_metrics,
+        x="Metric",
+        y="Score",
+        color="Group",
+        barmode="group",
+        title=f"{selected_player} Lineup Value Breakdown vs League Average",
+        hover_data=["Raw Value"],
+        range_y=[0, 100],
     )
-    fig = px.bar(player_metrics, x="Metric", y="Value", title=f"{selected_player} Lineup Value Breakdown")
+
     st.plotly_chart(fig, use_container_width=True)
 
     shot_frequency_columns = ["freq_rim", "freq_short_paint", "freq_mid", "freq_long_mid", "freq_3p"]
