@@ -891,26 +891,97 @@ def show_player_profiles_tab(df: pd.DataFrame) -> None:
     shot_accuracy_columns = ["fg_rim", "fg_short_paint", "fg_mid", "fg_long_mid", "fg_3p"]
 
     if all(column in df.columns for column in shot_frequency_columns):
-        st.subheader("Shot Profile")
+        st.subheader("Shot Profile vs League and Position Average")
+
         shot_labels = ["Rim", "Short Paint", "Midrange", "Long Midrange", "Three"]
-        shot_df = pd.DataFrame(
-            {
-                "Zone": shot_labels,
-                "Frequency": [player.get(column, np.nan) for column in shot_frequency_columns],
-            }
+
+        player_position = player.get("pos", None)
+
+        if "pos" in df.columns and pd.notna(player_position):
+            position_df = df[df["pos"] == player_position].copy()
+        else:
+            position_df = df.copy()
+
+        shot_freq_rows = []
+
+        for zone, column in zip(shot_labels, shot_frequency_columns):
+            shot_freq_rows.append(
+                {
+                    "Zone": zone,
+                    "Group": selected_player,
+                    "Frequency": player.get(column, np.nan),
+                }
+            )
+
+            shot_freq_rows.append(
+                {
+                    "Zone": zone,
+                    "Group": "League Average",
+                    "Frequency": df[column].mean(),
+                }
+            )
+
+            shot_freq_rows.append(
+                {
+                    "Zone": zone,
+                    "Group": f"{player_position} Average",
+                    "Frequency": position_df[column].mean(),
+                }
+            )
+
+        shot_freq_df = pd.DataFrame(shot_freq_rows)
+
+        fig_freq = px.bar(
+            shot_freq_df,
+            x="Zone",
+            y="Frequency",
+            color="Group",
+            barmode="group",
+            title=f"{selected_player} Shot Frequency vs League and {player_position} Average",
         )
 
-        if all(column in df.columns for column in shot_accuracy_columns):
-            shot_df["FG%"] = [player.get(column, np.nan) for column in shot_accuracy_columns]
+        st.plotly_chart(fig_freq, use_container_width=True)
 
-        shot_col1, shot_col2 = st.columns(2)
-        with shot_col1:
-            fig_freq = px.bar(shot_df, x="Zone", y="Frequency", title="Shot Frequency by Zone")
-            st.plotly_chart(fig_freq, use_container_width=True)
-        with shot_col2:
-            if "FG%" in shot_df.columns:
-                fig_fg = px.bar(shot_df, x="Zone", y="FG%", title="Field Goal Percentage by Zone")
-                st.plotly_chart(fig_fg, use_container_width=True)
+        if all(column in df.columns for column in shot_accuracy_columns):
+            shot_acc_rows = []
+
+            for zone, column in zip(shot_labels, shot_accuracy_columns):
+                shot_acc_rows.append(
+                    {
+                        "Zone": zone,
+                        "Group": selected_player,
+                        "FG%": player.get(column, np.nan),
+                    }
+                )
+
+                shot_acc_rows.append(
+                    {
+                        "Zone": zone,
+                        "Group": "League Average",
+                        "FG%": df[column].mean(),
+                    }
+                )
+
+                shot_acc_rows.append(
+                    {
+                        "Zone": zone,
+                        "Group": f"{player_position} Average",
+                        "FG%": position_df[column].mean(),
+                    }
+                )
+
+            shot_acc_df = pd.DataFrame(shot_acc_rows)
+
+            fig_fg = px.bar(
+                shot_acc_df,
+                x="Zone",
+                y="FG%",
+                color="Group",
+                barmode="group",
+                title=f"{selected_player} Shot Accuracy vs League and {player_position} Average",
+            )
+
+            st.plotly_chart(fig_fg, use_container_width=True)
 
     with st.expander("View full player row"):
         st.dataframe(
