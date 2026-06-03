@@ -246,6 +246,11 @@ def project_final_score(team_a_scores: dict, team_b_scores: dict) -> tuple[int, 
 
     return round(team_a_points), round(team_b_points)
 
+def get_first_available_column(df, possible_cols):
+    for col in possible_cols:
+        if col in df.columns:
+            return col
+    return None
 
 def create_projected_box_score(rotation: pd.DataFrame, target_team_points: int) -> pd.DataFrame:
     """Create a simple projected player box score for a selected rotation."""
@@ -271,16 +276,54 @@ def create_projected_box_score(rotation: pd.DataFrame, target_team_points: int) 
     box["REB"] = box["pct_reb"].fillna(0)
     box["REB"] = (box["REB"] / box["REB"].sum()) * 44 if box["REB"].sum() > 0 else 0
 
-    box["STL"] = box.get("pct_stl", pd.Series(0, index=box.index)).fillna(0)
-    box["BLK"] = box.get("pct_blk", pd.Series(0, index=box.index)).fillna(0)
+    # Better steals/blocks logic
+    # First try actual steal/block columns. If they do not exist, estimate from defensive stats.
+    steal_col = None
+    for col in ["stl", "STL", "steals", "pct_stl", "stl_pct", "steal_pct"]:
+        if col in box.columns:
+            steal_col = col
+            break
 
-    if box["STL"].sum() > 0:
-        box["STL"] = (box["STL"] / box["STL"].sum()) * 7
-    if box["BLK"].sum() > 0:
-        box["BLK"] = (box["BLK"] / box["BLK"].sum()) * 5
+    block_col = None
+    for col in ["blk", "BLK", "blocks", "pct_blk", "blk_pct", "block_pct"]:
+        if col in box.columns:
+            block_col = col
+            break
+
+    if steal_col:
+        box["STL_weight"] = box[steal_col].fillna(0)
+    else:
+        box["STL_weight"] = box["lineup_defensive_impact"].fillna(0)
+
+    if block_col:
+        box["BLK_weight"] = box[block_col].fillna(0)
+    else:
+        box["BLK_weight"] = (
+            box["lineup_defensive_impact"].fillna(0) * 0.70
+            + box["rebounding_value"].fillna(0) * 0.30
+        )
+
+    # Convert weights into team-level projected steals/blocks
+    if box["STL_weight"].sum() > 0:
+        box["STL"] = (box["STL_weight"] / box["STL_weight"].sum()) * 7
+    else:
+        box["STL"] = 7 / len(box)
+
+    if box["BLK_weight"].sum() > 0:
+        box["BLK"] = (box["BLK_weight"] / box["BLK_weight"].sum()) * 5
+    else:
+        box["BLK"] = 5 / len(box)
 
     box["FGM"] = box["PTS"] / 2.25
     box["FGA"] = box["FGM"] / box["ts_pct"].replace(0, np.nan).fillna(0.55)
+
+    # Minutes can have decimals
+    box["MIN"] = box["MIN"].round(1)
+
+    # Counting stats should be whole numbers
+    for column in ["PTS", "AST", "REB", "STL", "BLK", "FGM", "FGA"]:
+        if column in box.columns:
+            box[column] = box[column].round(0).astype(int)
 
     display_columns = [
         "rotation_role",
@@ -300,10 +343,6 @@ def create_projected_box_score(rotation: pd.DataFrame, target_team_points: int) 
         "defensive_profile",
     ]
     display_columns = available_columns(box, display_columns)
-
-    for column in ["MIN", "PTS", "AST", "REB", "STL", "BLK", "FGM", "FGA"]:
-        if column in box.columns:
-            box[column] = box[column].round(1)
 
     return box[display_columns]
 
