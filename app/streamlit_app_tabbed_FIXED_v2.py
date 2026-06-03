@@ -891,7 +891,7 @@ def show_player_profiles_tab(df: pd.DataFrame) -> None:
     shot_accuracy_columns = ["fg_rim", "fg_short_paint", "fg_mid", "fg_long_mid", "fg_3p"]
 
     if all(column in df.columns for column in shot_frequency_columns):
-        st.subheader("Shot Profile vs League and Position Average")
+        st.subheader("Shot Profile vs Position Average")
 
         shot_labels = ["Rim", "Short Paint", "Midrange", "Long Midrange", "Three"]
 
@@ -913,13 +913,6 @@ def show_player_profiles_tab(df: pd.DataFrame) -> None:
                 }
             )
 
-            shot_freq_rows.append(
-                {
-                    "Zone": zone,
-                    "Group": "League Average",
-                    "Frequency": df[column].mean(),
-                }
-            )
 
             shot_freq_rows.append(
                 {
@@ -937,7 +930,7 @@ def show_player_profiles_tab(df: pd.DataFrame) -> None:
             y="Frequency",
             color="Group",
             barmode="group",
-            title=f"{selected_player} Shot Frequency vs League and {player_position} Average",
+            title=f"{selected_player} Shot Frequency vs {player_position} Average",
         )
 
         st.plotly_chart(fig_freq, use_container_width=True)
@@ -957,14 +950,6 @@ def show_player_profiles_tab(df: pd.DataFrame) -> None:
                 shot_acc_rows.append(
                     {
                         "Zone": zone,
-                        "Group": "League Average",
-                        "FG%": df[column].mean(),
-                    }
-                )
-
-                shot_acc_rows.append(
-                    {
-                        "Zone": zone,
                         "Group": f"{player_position} Average",
                         "FG%": position_df[column].mean(),
                     }
@@ -978,7 +963,7 @@ def show_player_profiles_tab(df: pd.DataFrame) -> None:
                 y="FG%",
                 color="Group",
                 barmode="group",
-                title=f"{selected_player} Shot Accuracy vs League and {player_position} Average",
+                title=f"{selected_player} Shot Accuracy vs {player_position} Average",
             )
 
             st.plotly_chart(fig_fg, use_container_width=True)
