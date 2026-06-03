@@ -829,7 +829,7 @@ def show_player_profiles_tab(df: pd.DataFrame) -> None:
         st.write(player.get("defensive_profile", "N/A"))
         st.write(player.get("defensive_description", ""))
 
-st.subheader("Player Metrics vs League Average")
+    st.subheader("Player Metrics vs League Average")
 
     metric_map = {
         "Offense": "offensive_creation",
