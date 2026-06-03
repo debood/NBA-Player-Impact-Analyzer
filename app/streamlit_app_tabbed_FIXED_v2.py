@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from nba_api.stats.endpoints import leaguedashplayerstats
 
 st.set_page_config(
     page_title="NBA Player Impact Analyzer",
@@ -564,6 +565,38 @@ def build_custom_lineup_score(df: pd.DataFrame, weights: dict[str, float]) -> pd
 # -----------------------------------------------------------------------------
 # Tab sections
 # -----------------------------------------------------------------------------
+@st.cache_data(ttl=21600)
+def load_mvp_rankings() -> pd.DataFrame:
+    """Load current-season NBA stats and create a simple MVP ranking."""
+    stats = leaguedashplayerstats.LeagueDashPlayerStats(
+        season="2025-26",
+        season_type_all_star="Regular Season",
+        per_mode_detailed="PerGame",
+    ).get_data_frames()[0]
+
+    stats = stats[
+        (stats["GP"] >= 20) &
+        (stats["MIN"] >= 25)
+    ].copy()
+
+    stats["mvp_score"] = (
+        stats["PTS"] * 1.0 +
+        stats["REB"] * 1.2 +
+        stats["AST"] * 1.5 +
+        stats["STL"] * 3 +
+        stats["BLK"] * 3 +
+        stats["PLUS_MINUS"] * 0.7 +
+        stats["W_PCT"] * 20
+    )
+
+    stats["mvp_score"] = stats["mvp_score"].round(1)
+
+    stats["headshot_url"] = stats["PLAYER_ID"].apply(
+        lambda player_id: f"{NBA_HEADSHOT_BASE_URL}/{int(player_id)}.png"
+    )
+
+    return stats.sort_values("mvp_score", ascending=False)
+
 def show_overview_tab(df: pd.DataFrame) -> None:
     st.header("Project Overview")
     st.write(
@@ -578,6 +611,52 @@ def show_overview_tab(df: pd.DataFrame) -> None:
     metric_col3.metric("Avg TS%", format_percent(df["ts_pct"].mean(), 1))
     metric_col4.metric("Avg Usage", format_percent(df["usg_pct"].mean(), 1))
 
+    st.subheader("Current Season MVP Predictor")
+
+    try:
+        mvp_df = load_mvp_rankings()
+        top_mvp = mvp_df.iloc[0]
+
+        mvp_col1, mvp_col2 = st.columns([1, 3])
+
+        with mvp_col1:
+            st.image(top_mvp["headshot_url"], width=150)
+
+        with mvp_col2:
+            st.markdown(f"### MVP Leader: {top_mvp['PLAYER_NAME']}")
+            st.write(f"**Team:** {top_mvp['TEAM_ABBREVIATION']}")
+            st.write(f"**MVP Score:** {top_mvp['mvp_score']}")
+            st.write(
+                f"**Stats:** {top_mvp['PTS']:.1f} PPG, "
+                f"{top_mvp['REB']:.1f} RPG, "
+                f"{top_mvp['AST']:.1f} APG"
+            )
+
+        st.dataframe(
+            mvp_df[
+                [
+                    "PLAYER_NAME",
+                    "TEAM_ABBREVIATION",
+                    "mvp_score",
+                    "PTS",
+                    "REB",
+                    "AST",
+                    "STL",
+                    "BLK",
+                    "W_PCT",
+                    "PLUS_MINUS",
+                ]
+            ].head(10),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    except Exception as error:
+        st.warning("MVP stats could not load.")
+        st.caption(str(error))
+
+    st.divider()
+    
     st.subheader("What the app does")
     st.markdown(
         """
