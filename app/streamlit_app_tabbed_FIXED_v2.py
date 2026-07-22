@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from nba_api.stats.endpoints import leaguedashplayerstats
 
 st.set_page_config(
     page_title="NBA Player Impact Analyzer",
@@ -19,13 +18,14 @@ st.set_page_config(
 # project/
 # ├── app/streamlit_app.py
 # └── data/processed/player_profiles_final.csv
-DATA_PATH = Path("/Users/Marcy_Student/Desktop/NBA project (gh)/notebooks/data/processed/player_profiles_final.csv")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-# Backup paths in case you run this file from a different folder while testing.
+DATA_PATH = PROJECT_ROOT / "data" / "processed" / "player_profiles_app_final.csv"
+
 FALLBACK_DATA_PATHS = [
-    Path("data/processed/player_profiles_final.csv"),
-    Path("player_profiles_final.csv"),
-    Path(__file__).resolve().parent / "player_profiles_final.csv",
+    Path("data/processed/player_profiles_app_final.csv"),
+    Path("player_profiles_app_final.csv"),
+    Path(__file__).resolve().parent / "player_profiles_app_final.csv",
 ]
 
 NBA_HEADSHOT_BASE_URL = "https://cdn.nba.com/headshots/nba/latest/1040x760"
@@ -54,6 +54,17 @@ REQUIRED_COLUMNS = [
     "lineup_role",
     "scorer_profile",
     "defensive_profile",
+    "games_played_current",
+    "avg_minutes_current",
+    "avg_pts",
+    "avg_reb",
+    "avg_ast",
+    "avg_stl",
+    "avg_blk",
+    "avg_plus_minus",
+    "ts_pct_current",
+    "usg_pct_current",
+    "team_current",
 ]
 
 PROFILE_COLUMNS = [
@@ -109,7 +120,7 @@ def load_data() -> pd.DataFrame:
 
     if not path.exists():
         raise FileNotFoundError(
-            "Could not find player_profiles_final.csv. Put it in data/processed/ or beside this app file."
+            "Could not find player_profiles_app_final.csv. Put it in data/processed/ or beside this app file."
         )
 
     df = pd.read_csv(path)
@@ -159,6 +170,26 @@ def load_data() -> pd.DataFrame:
         "fg_mid",
         "fg_long_mid",
         "fg_3p",
+        "games_played_current",
+        "avg_minutes_current",
+        "avg_pts",
+        "avg_reb",
+        "avg_ast",
+        "avg_stl",
+        "avg_blk",
+        "avg_tov",
+        "avg_plus_minus",
+        "fg_pct_current",
+        "three_pct_current",
+        "ft_pct_current",
+        "ts_pct_current",
+        "usg_pct_current",
+        "net_rating_current",
+        "pie_current",
+        "pct_ast_current",
+        "pct_reb_current",
+        "pct_stl_current",
+        "pct_blk_current",
     ]
     for column in numeric_columns:
         if column in df.columns:
@@ -565,75 +596,36 @@ def build_custom_lineup_score(df: pd.DataFrame, weights: dict[str, float]) -> pd
 # -----------------------------------------------------------------------------
 # Tab sections
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=21600)
+@st.cache_data
 def load_mvp_rankings(local_df: pd.DataFrame) -> pd.DataFrame:
-    """Load current-season NBA stats if possible. If NBA API fails, use local data."""
-    try:
-        stats = leaguedashplayerstats.LeagueDashPlayerStats(
-            season="2025-26",
-            season_type_all_star="Regular Season",
-            per_mode_detailed="PerGame",
-            timeout=60,
-        ).get_data_frames()[0]
+    """Create an MVP ranking from current-season stats stored in the local CSV."""
+    mvp_df = local_df.copy()
 
-        stats = stats[
-            (stats["GP"] >= 20) &
-            (stats["MIN"] >= 25)
-        ].copy()
+    current_columns = [
+        "games_played_current", "avg_minutes_current", "avg_pts",
+        "avg_reb", "avg_ast", "avg_stl", "avg_blk",
+        "avg_plus_minus", "ts_pct_current",
+    ]
+    for column in current_columns:
+        mvp_df[column] = pd.to_numeric(mvp_df[column], errors="coerce")
 
-        stats["mvp_score"] = (
-            stats["PTS"] * 1.0 +
-            stats["REB"] * 1.2 +
-            stats["AST"] * 1.5 +
-            stats["STL"] * 3 +
-            stats["BLK"] * 3 +
-            stats["PLUS_MINUS"] * 0.7 +
-            stats["W_PCT"] * 20
-        )
+    mvp_df = mvp_df[
+        (mvp_df["games_played_current"] >= 20)
+        & (mvp_df["avg_minutes_current"] >= 25)
+        & mvp_df["avg_pts"].notna()
+    ].copy()
 
-        stats["mvp_score"] = stats["mvp_score"].round(1)
+    mvp_df["mvp_score"] = (
+        mvp_df["avg_pts"].fillna(0) * 1.0
+        + mvp_df["avg_reb"].fillna(0) * 1.2
+        + mvp_df["avg_ast"].fillna(0) * 1.5
+        + mvp_df["avg_stl"].fillna(0) * 3.0
+        + mvp_df["avg_blk"].fillna(0) * 3.0
+        + mvp_df["avg_plus_minus"].fillna(0) * 0.7
+        + mvp_df["ts_pct_current"].fillna(0) * 20
+    ).round(1)
 
-        stats["headshot_url"] = stats["PLAYER_ID"].apply(
-            lambda player_id: f"{NBA_HEADSHOT_BASE_URL}/{int(player_id)}.png"
-        )
-
-        stats["source"] = "NBA API"
-
-        return stats.sort_values("mvp_score", ascending=False)
-
-    except Exception:
-        fallback = local_df.copy()
-
-        fallback["mvp_score"] = (
-            fallback["impact_score"].fillna(0) * 0.35 +
-            fallback["lineup_score"].fillna(0) * 100 * 0.25 +
-            fallback["offensive_creation"].fillna(0) * 0.20 +
-            fallback["lineup_defensive_impact"].fillna(0) * 0.20
-        )
-
-        fallback["mvp_score"] = fallback["mvp_score"].round(1)
-
-        fallback = fallback.rename(columns={
-            "playerName": "PLAYER_NAME",
-            "team": "TEAM_ABBREVIATION",
-            "games_played": "GP",
-            "avg_minutes": "MIN",
-            "pct_reb": "REB",
-            "pct_ast": "AST",
-            "pct_stl": "STL",
-            "pct_blk": "BLK",
-            "net_rating": "PLUS_MINUS"
-        })
-
-        if "PTS" not in fallback.columns:
-            fallback["PTS"] = fallback["avg_fgm"].fillna(0) * 2
-
-        if "W_PCT" not in fallback.columns:
-            fallback["W_PCT"] = np.nan
-
-        fallback["source"] = "Local CSV fallback"
-
-        return fallback.sort_values("mvp_score", ascending=False)
+    return mvp_df.sort_values("mvp_score", ascending=False).reset_index(drop=True)
 
 def show_overview_tab(df: pd.DataFrame) -> None:
     st.header("Project Overview")
@@ -653,44 +645,46 @@ def show_overview_tab(df: pd.DataFrame) -> None:
 
     try:
         mvp_df = load_mvp_rankings(df)
-        top_mvp = mvp_df.iloc[0]
 
-        mvp_col1, mvp_col2 = st.columns([1, 3])
+        if mvp_df.empty:
+            st.warning("No players met the MVP minimum games and minutes requirements.")
+        else:
+            top_mvp = mvp_df.iloc[0]
+            mvp_col1, mvp_col2 = st.columns([1, 3])
 
-        with mvp_col1:
-            st.image(top_mvp["headshot_url"], width=150)
+            with mvp_col1:
+                if pd.notna(top_mvp.get("headshot_url")):
+                    st.image(top_mvp["headshot_url"], width=150)
 
-        with mvp_col2:
-            st.markdown(f"### MVP Leader: {top_mvp['PLAYER_NAME']}")
-            st.write(f"**Team:** {top_mvp['TEAM_ABBREVIATION']}")
-            st.write(f"**MVP Score:** {top_mvp['mvp_score']}")
-            st.write(
-                f"**Stats:** {top_mvp['PTS']:.1f} PPG, "
-                f"{top_mvp['REB']:.1f} RPG, "
-                f"{top_mvp['AST']:.1f} APG"
+            with mvp_col2:
+                st.markdown(f"### MVP Leader: {top_mvp['playerName']}")
+                st.write(f"**Team:** {top_mvp.get('team_current', 'N/A')}")
+                st.write(f"**MVP Score:** {top_mvp['mvp_score']:.1f}")
+                st.write(
+                    f"**Stats:** {top_mvp['avg_pts']:.1f} PPG, "
+                    f"{top_mvp['avg_reb']:.1f} RPG, "
+                    f"{top_mvp['avg_ast']:.1f} APG"
+                )
+                st.write(
+                    f"**Defense:** {top_mvp['avg_stl']:.1f} SPG, "
+                    f"{top_mvp['avg_blk']:.1f} BPG"
+                )
+
+            display_columns = [
+                "playerName", "team_current", "games_played_current",
+                "avg_minutes_current", "mvp_score", "avg_pts", "avg_reb",
+                "avg_ast", "avg_stl", "avg_blk", "avg_plus_minus",
+                "ts_pct_current",
+            ]
+
+            st.dataframe(
+                mvp_df[available_columns(mvp_df, display_columns)].head(10).round(2),
+                use_container_width=True,
+                hide_index=True,
             )
 
-        st.dataframe(
-            mvp_df[
-                [
-                    "PLAYER_NAME",
-                    "TEAM_ABBREVIATION",
-                    "mvp_score",
-                    "PTS",
-                    "REB",
-                    "AST",
-                    "STL",
-                    "BLK",
-                    "W_PCT",
-                    "PLUS_MINUS",
-                ]
-            ].head(10),
-            use_container_width=True,
-            hide_index=True,
-        )
-
     except Exception as error:
-        st.warning("MVP stats could not load.")
+        st.warning("MVP rankings could not load from the merged dataset.")
         st.caption(str(error))
 
     st.divider()

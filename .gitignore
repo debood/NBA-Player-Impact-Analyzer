@@ -1,3 +1,4 @@
 data/raw/PlayerStatistics.csv
 data/raw/PlayByPlay.parquet
 *.parquet
+.DS_Store
