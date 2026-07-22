@@ -566,36 +566,74 @@ def build_custom_lineup_score(df: pd.DataFrame, weights: dict[str, float]) -> pd
 # Tab sections
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=21600)
-def load_mvp_rankings() -> pd.DataFrame:
-    """Load current-season NBA stats and create a simple MVP ranking."""
-    stats = leaguedashplayerstats.LeagueDashPlayerStats(
-        season="2025-26",
-        season_type_all_star="Regular Season",
-        per_mode_detailed="PerGame",
-    ).get_data_frames()[0]
+def load_mvp_rankings(local_df: pd.DataFrame) -> pd.DataFrame:
+    """Load current-season NBA stats if possible. If NBA API fails, use local data."""
+    try:
+        stats = leaguedashplayerstats.LeagueDashPlayerStats(
+            season="2025-26",
+            season_type_all_star="Regular Season",
+            per_mode_detailed="PerGame",
+            timeout=60,
+        ).get_data_frames()[0]
 
-    stats = stats[
-        (stats["GP"] >= 20) &
-        (stats["MIN"] >= 25)
-    ].copy()
+        stats = stats[
+            (stats["GP"] >= 20) &
+            (stats["MIN"] >= 25)
+        ].copy()
 
-    stats["mvp_score"] = (
-        stats["PTS"] * 1.0 +
-        stats["REB"] * 1.2 +
-        stats["AST"] * 1.5 +
-        stats["STL"] * 3 +
-        stats["BLK"] * 3 +
-        stats["PLUS_MINUS"] * 0.7 +
-        stats["W_PCT"] * 20
-    )
+        stats["mvp_score"] = (
+            stats["PTS"] * 1.0 +
+            stats["REB"] * 1.2 +
+            stats["AST"] * 1.5 +
+            stats["STL"] * 3 +
+            stats["BLK"] * 3 +
+            stats["PLUS_MINUS"] * 0.7 +
+            stats["W_PCT"] * 20
+        )
 
-    stats["mvp_score"] = stats["mvp_score"].round(1)
+        stats["mvp_score"] = stats["mvp_score"].round(1)
 
-    stats["headshot_url"] = stats["PLAYER_ID"].apply(
-        lambda player_id: f"{NBA_HEADSHOT_BASE_URL}/{int(player_id)}.png"
-    )
+        stats["headshot_url"] = stats["PLAYER_ID"].apply(
+            lambda player_id: f"{NBA_HEADSHOT_BASE_URL}/{int(player_id)}.png"
+        )
 
-    return stats.sort_values("mvp_score", ascending=False)
+        stats["source"] = "NBA API"
+
+        return stats.sort_values("mvp_score", ascending=False)
+
+    except Exception:
+        fallback = local_df.copy()
+
+        fallback["mvp_score"] = (
+            fallback["impact_score"].fillna(0) * 0.35 +
+            fallback["lineup_score"].fillna(0) * 100 * 0.25 +
+            fallback["offensive_creation"].fillna(0) * 0.20 +
+            fallback["lineup_defensive_impact"].fillna(0) * 0.20
+        )
+
+        fallback["mvp_score"] = fallback["mvp_score"].round(1)
+
+        fallback = fallback.rename(columns={
+            "playerName": "PLAYER_NAME",
+            "team": "TEAM_ABBREVIATION",
+            "games_played": "GP",
+            "avg_minutes": "MIN",
+            "pct_reb": "REB",
+            "pct_ast": "AST",
+            "pct_stl": "STL",
+            "pct_blk": "BLK",
+            "net_rating": "PLUS_MINUS"
+        })
+
+        if "PTS" not in fallback.columns:
+            fallback["PTS"] = fallback["avg_fgm"].fillna(0) * 2
+
+        if "W_PCT" not in fallback.columns:
+            fallback["W_PCT"] = np.nan
+
+        fallback["source"] = "Local CSV fallback"
+
+        return fallback.sort_values("mvp_score", ascending=False)
 
 def show_overview_tab(df: pd.DataFrame) -> None:
     st.header("Project Overview")
@@ -614,7 +652,7 @@ def show_overview_tab(df: pd.DataFrame) -> None:
     st.subheader("Current Season MVP Predictor")
 
     try:
-        mvp_df = load_mvp_rankings()
+        mvp_df = load_mvp_rankings(df)
         top_mvp = mvp_df.iloc[0]
 
         mvp_col1, mvp_col2 = st.columns([1, 3])
