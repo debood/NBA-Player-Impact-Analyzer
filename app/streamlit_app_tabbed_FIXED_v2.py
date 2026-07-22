@@ -240,219 +240,368 @@ def min_max_scale_value(value: float, series: pd.Series) -> float:
 
     return float((clean_value - clean_series.min()) / (clean_series.max() - clean_series.min()))
 
+
+
 def z_score_value(value: float, comparison_series: pd.Series) -> float:
-    """Standardize one value relative to all players."""
-    clean_series = pd.to_numeric(
-        comparison_series,
-        errors="coerce"
-    ).dropna()
+    """Standardize one value relative to the full player pool."""
+    clean_series = pd.to_numeric(comparison_series, errors="coerce").dropna()
 
     if clean_series.empty or pd.isna(value):
         return 0.0
 
-    standard_deviation = clean_series.std()
-
+    standard_deviation = clean_series.std(ddof=0)
     if standard_deviation == 0 or pd.isna(standard_deviation):
         return 0.0
 
-    z_score = (
-        float(value) - clean_series.mean()
-    ) / standard_deviation
-
-    # Prevent extreme outliers from completely breaking the model.
-    return float(np.clip(z_score, -3.0, 3.0))
+    score = (float(value) - clean_series.mean()) / standard_deviation
+    return float(np.clip(score, -3.0, 3.0))
 
 
-def z_score_to_display_score(z_score: float) -> float:
-    """Convert a z-score to a 0–1 score for matchup charts."""
-    return float(1 / (1 + np.exp(-1.2 * z_score)))
-
-def calculate_lineup_score(
+def weighted_lineup_z(
     lineup: pd.DataFrame,
-    all_players: pd.DataFrame
-) -> dict:
-    """
-    Calculate team strength using standardized player values.
+    all_players: pd.DataFrame,
+    column: str,
+    weights: pd.Series,
+) -> float:
+    """Return a minute-weighted lineup z-score for one metric."""
+    if column not in lineup.columns or column not in all_players.columns:
+        return 0.0
 
-    The model includes:
-    - category strength,
-    - starter-heavy minute weighting,
-    - star power,
-    - weakest-starter quality,
-    - optional bench depth.
-    """
+    values = pd.to_numeric(lineup[column], errors="coerce")
+    z_values = values.apply(lambda value: z_score_value(value, all_players[column]))
 
-    lineup = lineup.copy()
+    valid = z_values.notna() & weights.notna()
+    if not valid.any() or weights[valid].sum() == 0:
+        return 0.0
 
-    # Starters have much more influence than bench players.
-    lineup["model_minutes"] = np.where(
-        lineup["rotation_role"] == "Starter",
-        34.0,
-        14.0
-    )
+    return float(np.average(z_values[valid], weights=weights[valid]))
 
-    metrics = {
-        "offense": ("offensive_creation", 0.40),
-        "defense": ("lineup_defensive_impact", 0.25),
-        "spacing": ("spacing_value", 0.15),
-        "playmaking": ("playmaking_value", 0.10),
-        "rebounding": ("rebounding_value", 0.10),
-    }
 
-    category_z_scores = {}
-    display_scores = {}
-    raw_values = {}
+def z_to_display_score(z_score: float) -> float:
+    """Convert a z-score to a 0–1 score for the matchup chart."""
+    return float(1 / (1 + np.exp(-1.25 * z_score)))
 
-    for label, (column, weight) in metrics.items():
-        league_values = all_players[column]
 
-        lineup[f"{label}_z"] = lineup[column].apply(
-            lambda value: z_score_value(
-                value,
-                league_values
-            )
-        )
-
-        category_z = np.average(
-            lineup[f"{label}_z"],
-            weights=lineup["model_minutes"]
-        )
-
-        category_z_scores[label] = category_z
-
-        display_scores[f"{label}_score"] = (
-            z_score_to_display_score(category_z)
-        )
-
-        raw_values[f"raw_{label}"] = (
-            lineup[column].fillna(0).mean()
-        )
-
-    # Overall category performance
-    core_team_z = sum(
-        category_z_scores[label] * weight
-        for label, (_, weight) in metrics.items()
-    )
-
-    # Build an individual quality score for star/weak-link calculations.
-    lineup["overall_quality_z"] = (
-        lineup["lineup_score"].apply(
-            lambda value: z_score_value(
-                value,
-                all_players["lineup_score"]
-            )
-        ) * 0.60
-        +
-        lineup["impact_score"].apply(
-            lambda value: z_score_value(
-                value,
-                all_players["impact_score"]
-            )
-        ) * 0.40
-    )
-
-    starters = lineup[
-        lineup["rotation_role"] == "Starter"
-    ].copy()
-
+def calculate_lineup_fit_adjustment(
+    lineup: pd.DataFrame,
+    all_players: pd.DataFrame,
+) -> float:
+    """Apply lineup-construction bonuses and penalties in team-strength points."""
+    starters = lineup[lineup["rotation_role"] == "Starter"].copy()
     if starters.empty:
         starters = lineup.copy()
 
-    starter_quality = starters[
-        "overall_quality_z"
-    ].sort_values(ascending=False)
+    adjustment = 0.0
 
-    # Great teams should receive credit for elite top-end talent.
-    star_power_z = starter_quality.head(2).mean()
+    roles = starters.get(
+        "lineup_role",
+        pd.Series("", index=starters.index, dtype="object"),
+    ).fillna("").astype(str)
 
-    # Weak starters should lower the team's rating.
-    weak_link_z = starter_quality.tail(2).mean()
+    guards = roles.str.contains("Guard", case=False).sum()
+    wings = roles.str.contains("Wing", case=False).sum()
+    bigs = roles.str.contains("Big", case=False).sum()
 
-    bench = lineup[
-        lineup["rotation_role"] == "Bench"
-    ].copy()
+    # Extreme size/position imbalance.
+    if guards >= 4:
+        adjustment -= 10.0
+    elif guards == 3 and bigs == 0:
+        adjustment -= 5.0
 
-    # No bench selection is treated as neutral, not automatically bad.
-    if bench.empty:
-        bench_depth_z = 0.0
-    else:
-        bench_depth_z = bench["overall_quality_z"].mean()
+    if bigs == 0:
+        adjustment -= 10.0
 
-    combined_team_z = (
+    defensive_profiles = starters.get(
+        "defensive_profile",
+        pd.Series("", index=starters.index, dtype="object"),
+    ).fillna("").astype(str)
+
+    named_rim_protectors = defensive_profiles.str.contains(
+        "Rim Protector|Interior Defensive Anchor|Shot Blocker",
+        case=False,
+        regex=True,
+    ).sum()
+
+    block_rim_protectors = 0
+    if "avg_blk" in starters.columns and "avg_blk" in all_players.columns:
+        block_cutoff = pd.to_numeric(
+            all_players["avg_blk"],
+            errors="coerce",
+        ).quantile(0.75)
+
+        block_rim_protectors = (
+            pd.to_numeric(starters["avg_blk"], errors="coerce").fillna(0)
+            >= block_cutoff
+        ).sum()
+
+    if max(named_rim_protectors, block_rim_protectors) == 0:
+        adjustment -= 8.0
+
+    def count_below_percentile(column: str, percentile: float = 0.35) -> int:
+        if column not in starters.columns or column not in all_players.columns:
+            return 0
+
+        cutoff = pd.to_numeric(
+            all_players[column],
+            errors="coerce",
+        ).quantile(percentile)
+
+        return int(
+            (
+                pd.to_numeric(starters[column], errors="coerce").fillna(0)
+                < cutoff
+            ).sum()
+        )
+
+    non_spacers = count_below_percentile("spacing_value")
+    low_offense = count_below_percentile("offensive_creation")
+    weak_defenders = count_below_percentile("lineup_defensive_impact")
+    weak_rebounders = count_below_percentile("rebounding_value")
+
+    if non_spacers >= 4:
+        adjustment -= 12.0
+    elif non_spacers == 3:
+        adjustment -= 7.0
+
+    if low_offense >= 4:
+        adjustment -= 10.0
+    elif low_offense == 3:
+        adjustment -= 5.0
+
+    if weak_defenders >= 4:
+        adjustment -= 10.0
+    elif weak_defenders == 3:
+        adjustment -= 5.0
+
+    if weak_rebounders >= 4:
+        adjustment -= 6.0
+
+    # Small bonuses for a complete five-man construction.
+    if bigs >= 1 and guards >= 1 and wings >= 1:
+        adjustment += 2.0
+
+    if non_spacers <= 1:
+        adjustment += 2.0
+
+    # Avoid unlimited stacking while still allowing severe lineup penalties.
+    return float(np.clip(adjustment, -32.0, 6.0))
+
+
+def calculate_lineup_score(
+    lineup: pd.DataFrame,
+    all_players: pd.DataFrame,
+) -> dict:
+    """Calculate a wider, matchup-ready team-strength score."""
+    lineup = lineup.copy()
+
+    # With no bench selected, five starters each receive 48 minutes.
+    lineup["model_minutes"] = np.where(
+        lineup["rotation_role"] == "Starter",
+        36.0,
+        12.0,
+    )
+
+    total_model_minutes = lineup["model_minutes"].sum()
+    if total_model_minutes > 0:
+        lineup["model_minutes"] *= 240 / total_model_minutes
+
+    weights = lineup["model_minutes"]
+
+    metric_columns = {
+        "offense": "offensive_creation",
+        "defense": "lineup_defensive_impact",
+        "spacing": "spacing_value",
+        "playmaking": "playmaking_value",
+        "rebounding": "rebounding_value",
+    }
+
+    category_z = {
+        label: weighted_lineup_z(lineup, all_players, column, weights)
+        for label, column in metric_columns.items()
+    }
+
+    core_team_z = (
+        category_z["offense"] * 0.35
+        + category_z["defense"] * 0.25
+        + category_z["spacing"] * 0.15
+        + category_z["playmaking"] * 0.10
+        + category_z["rebounding"] * 0.15
+    )
+
+    # Individual player quality is used for star power and weak-link effects.
+    quality_components = [
+        ("impact_score", 0.30),
+        ("lineup_score", 0.25),
+        ("avg_pts", 0.20),
+        ("ts_pct_current", 0.10),
+        ("lineup_defensive_impact", 0.15),
+    ]
+
+    lineup["individual_quality_z"] = 0.0
+    for column, component_weight in quality_components:
+        if column in lineup.columns and column in all_players.columns:
+            lineup["individual_quality_z"] += (
+                lineup[column].apply(
+                    lambda value: z_score_value(value, all_players[column])
+                )
+                * component_weight
+            )
+
+    starters = lineup[lineup["rotation_role"] == "Starter"].copy()
+    if starters.empty:
+        starters = lineup.copy()
+
+    starter_quality = starters["individual_quality_z"].sort_values(
+        ascending=False
+    )
+
+    star_power_z = float(starter_quality.head(2).mean())
+    weak_link_z = float(starter_quality.tail(2).mean())
+
+    bench = lineup[lineup["rotation_role"] == "Bench"]
+    bench_depth_z = (
+        float(bench["individual_quality_z"].mean())
+        if not bench.empty
+        else 0.0
+    )
+
+    fit_adjustment = calculate_lineup_fit_adjustment(lineup, all_players)
+
+    combined_quality_z = (
         core_team_z * 0.65
         + star_power_z * 0.20
         + weak_link_z * 0.10
         + bench_depth_z * 0.05
     )
 
-    # Convert standardized team quality to a 0–100 rating.
+    # A wider scale than the old min-max average. Structural penalties are
+    # measured directly in team-strength points.
     team_strength = float(
         np.clip(
-            50 + combined_team_z * 15,
+            50 + combined_quality_z * 18 + fit_adjustment,
             0,
-            100
+            100,
         )
     )
 
+    rim_pressure_z = (
+        weighted_lineup_z(lineup, all_players, "freq_rim", weights) * 0.55
+        + weighted_lineup_z(lineup, all_players, "fg_rim", weights) * 0.20
+        + weighted_lineup_z(lineup, all_players, "avg_pts", weights) * 0.25
+    )
+
+    rim_protection_z = (
+        weighted_lineup_z(lineup, all_players, "avg_blk", weights) * 0.55
+        + weighted_lineup_z(
+            lineup,
+            all_players,
+            "lineup_defensive_impact",
+            weights,
+        )
+        * 0.45
+    )
+
     return {
-        # Retain lineup_score so the rest of your app still works.
         "lineup_score": team_strength / 100,
         "team_strength": team_strength,
         "core_team_z": core_team_z,
         "star_power_z": star_power_z,
         "weak_link_z": weak_link_z,
         "bench_depth_z": bench_depth_z,
-        **display_scores,
-        **raw_values,
+        "fit_adjustment": fit_adjustment,
+        "offense_z": category_z["offense"],
+        "defense_z": category_z["defense"],
+        "spacing_z": category_z["spacing"],
+        "playmaking_z": category_z["playmaking"],
+        "rebounding_z": category_z["rebounding"],
+        "rim_pressure_z": rim_pressure_z,
+        "rim_protection_z": rim_protection_z,
+        "offense_score": z_to_display_score(category_z["offense"]),
+        "defense_score": z_to_display_score(category_z["defense"]),
+        "spacing_score": z_to_display_score(category_z["spacing"]),
+        "playmaking_score": z_to_display_score(category_z["playmaking"]),
+        "rebounding_score": z_to_display_score(category_z["rebounding"]),
+        "raw_offense": lineup["offensive_creation"].fillna(0).mean(),
+        "raw_defense": lineup["lineup_defensive_impact"].fillna(0).mean(),
+        "raw_spacing": lineup["spacing_value"].fillna(0).mean(),
+        "raw_playmaking": lineup["playmaking_value"].fillna(0).mean(),
+        "raw_rebounding": lineup["rebounding_value"].fillna(0).mean(),
     }
 
 
 def project_final_score(
     team_a_scores: dict,
-    team_b_scores: dict
+    team_b_scores: dict,
 ) -> tuple[int, int]:
-    """
-    Convert the team-strength difference into a projected score.
-
-    Similar teams remain close, while major talent gaps produce
-    much larger projected margins.
-    """
-
-    base_score = 112
-
-    team_a_strength = team_a_scores.get(
-        "team_strength",
-        team_a_scores["lineup_score"] * 100
+    """Project a score with nonlinear blowout scaling and matchup interaction."""
+    strength_gap = (
+        team_a_scores["team_strength"]
+        - team_b_scores["team_strength"]
     )
 
-    team_b_strength = team_b_scores.get(
-        "team_strength",
-        team_b_scores["lineup_score"] * 100
-    )
-
-    strength_gap = team_a_strength - team_b_strength
-    absolute_gap = abs(strength_gap)
-
-    # Nonlinear formula:
-    # small strength differences stay realistic,
-    # large differences become much more noticeable.
+    # Nonlinear scaling: ordinary matchups remain plausible, while extreme
+    # talent gaps can reach 40–55 points.
     projected_margin = (
-        absolute_gap * 0.55
-        + (absolute_gap ** 2) * 0.015
+        strength_gap * 0.70
+        + strength_gap * abs(strength_gap) * 0.012
     )
 
-    projected_margin = min(projected_margin, 45)
+    rim_mismatch = (
+        team_a_scores["rim_pressure_z"]
+        - team_b_scores["rim_protection_z"]
+        - team_b_scores["rim_pressure_z"]
+        + team_a_scores["rim_protection_z"]
+    )
 
-    if strength_gap < 0:
-        projected_margin *= -1
+    spacing_mismatch = (
+        team_a_scores["spacing_z"]
+        - team_b_scores["spacing_z"]
+    )
 
-    team_a_points = base_score + projected_margin / 2
-    team_b_points = base_score - projected_margin / 2
+    rebounding_mismatch = (
+        team_a_scores["rebounding_z"]
+        - team_b_scores["rebounding_z"]
+    )
 
-    team_a_points = np.clip(team_a_points, 85, 140)
-    team_b_points = np.clip(team_b_points, 85, 140)
+    star_mismatch = (
+        team_a_scores["star_power_z"]
+        - team_b_scores["star_power_z"]
+    )
+
+    projected_margin += (
+        rim_mismatch * 3.5
+        + spacing_mismatch * 2.5
+        + rebounding_mismatch * 2.0
+        + star_mismatch * 2.0
+    )
+
+    projected_margin = float(np.clip(projected_margin, -58, 58))
+
+    # Let overall offense and defense move the total away from a fixed 224.
+    projected_total = (
+        218
+        + (
+            team_a_scores["offense_z"]
+            + team_b_scores["offense_z"]
+        )
+        * 4
+        - (
+            team_a_scores["defense_z"]
+            + team_b_scores["defense_z"]
+        )
+        * 2
+    )
+
+    projected_total = float(np.clip(projected_total, 188, 240))
+
+    team_a_points = projected_total / 2 + projected_margin / 2
+    team_b_points = projected_total / 2 - projected_margin / 2
+
+    team_a_points = float(np.clip(team_a_points, 72, 150))
+    team_b_points = float(np.clip(team_b_points, 72, 150))
 
     return round(team_a_points), round(team_b_points)
+
 
 def get_first_available_column(df, possible_cols):
     for col in possible_cols:
@@ -460,141 +609,121 @@ def get_first_available_column(df, possible_cols):
             return col
     return None
 
-def create_projected_box_score(rotation: pd.DataFrame, target_team_points: int) -> pd.DataFrame:
-    """Create a simple projected player box score for a selected rotation."""
+
+def create_projected_box_score(
+    rotation: pd.DataFrame,
+    target_team_points: int,
+) -> pd.DataFrame:
+    """Project player stats without forcing every team to identical totals."""
     box = rotation.copy()
-    box["MIN"] = np.where(box["rotation_role"] == "Starter", 34, 14)
+
+    box["MIN"] = np.where(
+        box["rotation_role"] == "Starter",
+        36.0,
+        12.0,
+    )
 
     total_minutes = box["MIN"].sum()
     if total_minutes > 0:
-        box["MIN"] = box["MIN"] * (240 / total_minutes)
+        box["MIN"] *= 240 / total_minutes
 
-    # -----------------------------
-    # POINTS / SHOTS LOGIC
-    # -----------------------------
-    # Use shot-taking stats first, so high-volume scorers shoot more.
-    # Fallback to offensive creation if shot-volume columns are missing.
-    shot_volume_col = None
-
-    for col in ["usg_pct", "usage_pct", "pct_usg", "fga", "FGA", "avg_fga", "field_goal_attempts"]:
-        if col in box.columns:
-            shot_volume_col = col
-            break
-
-    if shot_volume_col:
-        box["shot_weight"] = box[shot_volume_col].fillna(0)
+    if "avg_minutes_current" in box.columns:
+        baseline_minutes = pd.to_numeric(
+            box["avg_minutes_current"],
+            errors="coerce",
+        )
     else:
-        box["shot_weight"] = (
-            box["offensive_creation"].fillna(0) * 0.60
-            + box["lineup_score"].fillna(0) * 20
+        baseline_minutes = pd.to_numeric(
+            box.get("avg_minutes", 30),
+            errors="coerce",
         )
 
-    # Keep weights from going negative
-    box["shot_weight"] = box["shot_weight"].clip(lower=0)
+    baseline_minutes = baseline_minutes.replace(0, np.nan).fillna(30)
 
-    # Give starters a little more shot opportunity than bench players
-    box["shot_weight"] = box["shot_weight"] * (box["MIN"] / box["MIN"].mean())
+    # Production rises with minutes, but not perfectly linearly because playing
+    # 48 minutes creates fatigue.
+    box["minute_factor"] = (
+        box["MIN"] / baseline_minutes
+    ).clip(lower=0.35, upper=1.70) ** 0.85
 
-    if box["shot_weight"].sum() == 0:
-        box["shot_weight"] = 1
+    def projected_from_average(
+        source_column: str,
+        fallback_column: str | None = None,
+    ) -> pd.Series:
+        if source_column in box.columns:
+            values = pd.to_numeric(
+                box[source_column],
+                errors="coerce",
+            ).fillna(0)
+        elif fallback_column and fallback_column in box.columns:
+            values = pd.to_numeric(
+                box[fallback_column],
+                errors="coerce",
+            ).fillna(0)
+        else:
+            values = pd.Series(0.0, index=box.index)
 
-    # Team FGA estimate
-    team_fga = target_team_points / 1.12
+        return values.clip(lower=0) * box["minute_factor"]
 
-    box["FGA"] = (box["shot_weight"] / box["shot_weight"].sum()) * team_fga
+    # Allocate team points from real current scoring production.
+    box["PTS_weight"] = projected_from_average("avg_pts")
 
-    # Use TS% to estimate points from shot attempts
-    if "ts_pct" in box.columns:
-        box["efficiency"] = box["ts_pct"].replace(0, np.nan).fillna(0.55)
-    else:
-        box["efficiency"] = 0.55
-
-    box["efficiency"] = box["efficiency"].clip(lower=0.45, upper=0.70)
-
-    box["PTS_raw"] = box["FGA"] * box["efficiency"] * 2.05
-
-    if box["PTS_raw"].sum() > 0:
-        box["PTS"] = (box["PTS_raw"] / box["PTS_raw"].sum()) * target_team_points
-    else:
-        box["PTS"] = target_team_points / len(box)
-
-    box["FGM"] = box["PTS"] / 2.25
-
-    # -----------------------------
-    # ASSISTS
-    # -----------------------------
-    box["AST"] = box["points_generated_by_assists"].fillna(0)
-
-    # No negative assists
-    box["AST"] = box["AST"].clip(lower=0)
-
-    box["AST"] = (box["AST"] / box["AST"].sum()) * 25 if box["AST"].sum() > 0 else 0
-
-    # -----------------------------
-    # REBOUNDS
-    # -----------------------------
-    box["REB"] = box["pct_reb"].fillna(0)
-
-    # No negative rebounds
-    box["REB"] = box["REB"].clip(lower=0)
-
-    box["REB"] = (box["REB"] / box["REB"].sum()) * 44 if box["REB"].sum() > 0 else 0
-
-    # -----------------------------
-    # STEALS / BLOCKS
-    # -----------------------------
-    steal_col = None
-    for col in ["stl", "STL", "steals", "pct_stl", "stl_pct", "steal_pct"]:
-        if col in box.columns:
-            steal_col = col
-            break
-
-    block_col = None
-    for col in ["blk", "BLK", "blocks", "pct_blk", "blk_pct", "block_pct"]:
-        if col in box.columns:
-            block_col = col
-            break
-
-    if steal_col:
-        box["STL_weight"] = box[steal_col].fillna(0)
-    else:
-        box["STL_weight"] = box["lineup_defensive_impact"].fillna(0)
-
-    if block_col:
-        box["BLK_weight"] = box[block_col].fillna(0)
-    else:
-        box["BLK_weight"] = (
-            box["lineup_defensive_impact"].fillna(0) * 0.70
-            + box["rebounding_value"].fillna(0) * 0.30
+    if box["PTS_weight"].sum() == 0:
+        box["PTS_weight"] = (
+            box["offensive_creation"].fillna(0).clip(lower=0)
+            + box["lineup_score"].fillna(0).clip(lower=0) * 20
         )
 
-    # This is the fix for negative steals/blocks
-    box["STL_weight"] = box["STL_weight"].clip(lower=0)
-    box["BLK_weight"] = box["BLK_weight"].clip(lower=0)
+    if box["PTS_weight"].sum() == 0:
+        box["PTS_weight"] = 1.0
 
-    if box["STL_weight"].sum() > 0:
-        box["STL"] = (box["STL_weight"] / box["STL_weight"].sum()) * 7
+    box["PTS"] = (
+        box["PTS_weight"] / box["PTS_weight"].sum()
+    ) * target_team_points
+
+    # Unlike the old function, these totals are not forced to 44/25/7/5.
+    box["REB"] = projected_from_average("avg_reb")
+    box["AST"] = projected_from_average("avg_ast")
+    box["STL"] = projected_from_average("avg_stl")
+    box["BLK"] = projected_from_average("avg_blk")
+
+    if "avg_fga" in box.columns:
+        box["FGA"] = projected_from_average("avg_fga")
     else:
-        box["STL"] = 7 / len(box)
+        box["FGA"] = box["PTS"] / 1.12
 
-    if box["BLK_weight"].sum() > 0:
-        box["BLK"] = (box["BLK_weight"] / box["BLK_weight"].sum()) * 5
+    fg_percentage_column = (
+        "fg_pct_current"
+        if "fg_pct_current" in box.columns
+        else "fg_pct"
+    )
+
+    if fg_percentage_column in box.columns:
+        box["FGM"] = (
+            box["FGA"]
+            * pd.to_numeric(
+                box[fg_percentage_column],
+                errors="coerce",
+            ).fillna(0.45).clip(lower=0.30, upper=0.75)
+        )
     else:
-        box["BLK"] = 5 / len(box)
+        box["FGM"] = box["PTS"] / 2.25
 
-    # Extra safety: no negative box score stats
-    for col in ["PTS", "REB", "AST", "STL", "BLK", "FGM", "FGA"]:
-        if col in box.columns:
-            box[col] = box[col].clip(lower=0)
+    for column in [
+        "PTS", "REB", "AST", "STL", "BLK", "FGM", "FGA"
+    ]:
+        box[column] = (
+            pd.to_numeric(box[column], errors="coerce")
+            .fillna(0)
+            .clip(lower=0)
+        )
 
-    # -----------------------------
-    # ROUNDING
-    # -----------------------------
     box["MIN"] = box["MIN"].round(1)
 
-    for column in ["PTS", "AST", "REB", "STL", "BLK", "FGM", "FGA"]:
-        if column in box.columns:
-            box[column] = box[column].round(0).astype(int)
+    for column in [
+        "PTS", "AST", "REB", "STL", "BLK", "FGM", "FGA"
+    ]:
+        box[column] = box[column].round(0).astype(int)
 
     display_columns = [
         "rotation_role",
@@ -614,9 +743,7 @@ def create_projected_box_score(rotation: pd.DataFrame, target_team_points: int) 
         "defensive_profile",
     ]
 
-    display_columns = available_columns(box, display_columns)
-
-    return box[display_columns]
+    return box[available_columns(box, display_columns)]
 
 
 def create_team_box_score(player_box: pd.DataFrame) -> pd.DataFrame:
@@ -673,9 +800,9 @@ def select_team(team_label: str, player_list: list[str]) -> tuple[list[str], lis
 
     remaining_players = [player for player in player_list if player not in starters]
     bench = st.multiselect(
-        f"Select {team_label} Bench Players (optional, up to 10)",
+        f"Select {team_label} Bench Players (optional, up to 5)",
         remaining_players,
-        max_selections=10,
+        max_selections=5,
         key=f"{team_label}_bench",
     )
 
