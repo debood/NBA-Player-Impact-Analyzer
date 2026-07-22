@@ -240,9 +240,57 @@ def min_max_scale_value(value: float, series: pd.Series) -> float:
 
     return float((clean_value - clean_series.min()) / (clean_series.max() - clean_series.min()))
 
+def z_score_value(value: float, comparison_series: pd.Series) -> float:
+    """Standardize one value relative to all players."""
+    clean_series = pd.to_numeric(
+        comparison_series,
+        errors="coerce"
+    ).dropna()
 
-def calculate_lineup_score(lineup: pd.DataFrame, all_players: pd.DataFrame) -> dict:
-    """Calculate a normalized lineup score and category scores for one rotation."""
+    if clean_series.empty or pd.isna(value):
+        return 0.0
+
+    standard_deviation = clean_series.std()
+
+    if standard_deviation == 0 or pd.isna(standard_deviation):
+        return 0.0
+
+    z_score = (
+        float(value) - clean_series.mean()
+    ) / standard_deviation
+
+    # Prevent extreme outliers from completely breaking the model.
+    return float(np.clip(z_score, -3.0, 3.0))
+
+
+def z_score_to_display_score(z_score: float) -> float:
+    """Convert a z-score to a 0–1 score for matchup charts."""
+    return float(1 / (1 + np.exp(-1.2 * z_score)))
+
+def calculate_lineup_score(
+    lineup: pd.DataFrame,
+    all_players: pd.DataFrame
+) -> dict:
+    """
+    Calculate team strength using standardized player values.
+
+    The model includes:
+    - category strength,
+    - starter-heavy minute weighting,
+    - star power,
+    - weakest-starter quality,
+    - optional bench depth.
+    """
+
+    lineup = lineup.copy()
+
+    # Starters have much more influence than bench players.
+    lineup["model_minutes"] = np.where(
+        lineup["rotation_role"] == "Starter",
+        34.0,
+        14.0
+    )
+
     metrics = {
         "offense": ("offensive_creation", 0.40),
         "defense": ("lineup_defensive_impact", 0.25),
@@ -251,30 +299,158 @@ def calculate_lineup_score(lineup: pd.DataFrame, all_players: pd.DataFrame) -> d
         "rebounding": ("rebounding_value", 0.10),
     }
 
-    scores = {}
+    category_z_scores = {}
+    display_scores = {}
     raw_values = {}
 
     for label, (column, weight) in metrics.items():
-        raw_value = lineup[column].fillna(0).mean()
-        scaled_value = min_max_scale_value(raw_value, all_players[column])
-        scores[f"{label}_score"] = scaled_value
-        raw_values[f"raw_{label}"] = raw_value
+        league_values = all_players[column]
 
-    lineup_score = sum(scores[f"{label}_score"] * weight for label, (_, weight) in metrics.items())
-    return {"lineup_score": lineup_score, **scores, **raw_values}
+        lineup[f"{label}_z"] = lineup[column].apply(
+            lambda value: z_score_value(
+                value,
+                league_values
+            )
+        )
+
+        category_z = np.average(
+            lineup[f"{label}_z"],
+            weights=lineup["model_minutes"]
+        )
+
+        category_z_scores[label] = category_z
+
+        display_scores[f"{label}_score"] = (
+            z_score_to_display_score(category_z)
+        )
+
+        raw_values[f"raw_{label}"] = (
+            lineup[column].fillna(0).mean()
+        )
+
+    # Overall category performance
+    core_team_z = sum(
+        category_z_scores[label] * weight
+        for label, (_, weight) in metrics.items()
+    )
+
+    # Build an individual quality score for star/weak-link calculations.
+    lineup["overall_quality_z"] = (
+        lineup["lineup_score"].apply(
+            lambda value: z_score_value(
+                value,
+                all_players["lineup_score"]
+            )
+        ) * 0.60
+        +
+        lineup["impact_score"].apply(
+            lambda value: z_score_value(
+                value,
+                all_players["impact_score"]
+            )
+        ) * 0.40
+    )
+
+    starters = lineup[
+        lineup["rotation_role"] == "Starter"
+    ].copy()
+
+    if starters.empty:
+        starters = lineup.copy()
+
+    starter_quality = starters[
+        "overall_quality_z"
+    ].sort_values(ascending=False)
+
+    # Great teams should receive credit for elite top-end talent.
+    star_power_z = starter_quality.head(2).mean()
+
+    # Weak starters should lower the team's rating.
+    weak_link_z = starter_quality.tail(2).mean()
+
+    bench = lineup[
+        lineup["rotation_role"] == "Bench"
+    ].copy()
+
+    # No bench selection is treated as neutral, not automatically bad.
+    if bench.empty:
+        bench_depth_z = 0.0
+    else:
+        bench_depth_z = bench["overall_quality_z"].mean()
+
+    combined_team_z = (
+        core_team_z * 0.65
+        + star_power_z * 0.20
+        + weak_link_z * 0.10
+        + bench_depth_z * 0.05
+    )
+
+    # Convert standardized team quality to a 0–100 rating.
+    team_strength = float(
+        np.clip(
+            50 + combined_team_z * 15,
+            0,
+            100
+        )
+    )
+
+    return {
+        # Retain lineup_score so the rest of your app still works.
+        "lineup_score": team_strength / 100,
+        "team_strength": team_strength,
+        "core_team_z": core_team_z,
+        "star_power_z": star_power_z,
+        "weak_link_z": weak_link_z,
+        "bench_depth_z": bench_depth_z,
+        **display_scores,
+        **raw_values,
+    }
 
 
-def project_final_score(team_a_scores: dict, team_b_scores: dict) -> tuple[int, int]:
-    """Convert the lineup score difference into a projected final score."""
+def project_final_score(
+    team_a_scores: dict,
+    team_b_scores: dict
+) -> tuple[int, int]:
+    """
+    Convert the team-strength difference into a projected score.
+
+    Similar teams remain close, while major talent gaps produce
+    much larger projected margins.
+    """
+
     base_score = 112
-    score_gap = team_a_scores["lineup_score"] - team_b_scores["lineup_score"]
-    projected_margin = score_gap * 75
+
+    team_a_strength = team_a_scores.get(
+        "team_strength",
+        team_a_scores["lineup_score"] * 100
+    )
+
+    team_b_strength = team_b_scores.get(
+        "team_strength",
+        team_b_scores["lineup_score"] * 100
+    )
+
+    strength_gap = team_a_strength - team_b_strength
+    absolute_gap = abs(strength_gap)
+
+    # Nonlinear formula:
+    # small strength differences stay realistic,
+    # large differences become much more noticeable.
+    projected_margin = (
+        absolute_gap * 0.55
+        + (absolute_gap ** 2) * 0.015
+    )
+
+    projected_margin = min(projected_margin, 45)
+
+    if strength_gap < 0:
+        projected_margin *= -1
 
     team_a_points = base_score + projected_margin / 2
     team_b_points = base_score - projected_margin / 2
 
-    team_a_points = max(85, min(140, team_a_points))
-    team_b_points = max(85, min(140, team_b_points))
+    team_a_points = np.clip(team_a_points, 85, 140)
+    team_b_points = np.clip(team_b_points, 85, 140)
 
     return round(team_a_points), round(team_b_points)
 
