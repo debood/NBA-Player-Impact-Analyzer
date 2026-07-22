@@ -497,9 +497,9 @@ def select_team(team_label: str, player_list: list[str]) -> tuple[list[str], lis
 
     remaining_players = [player for player in player_list if player not in starters]
     bench = st.multiselect(
-        f"Select {team_label} Bench Players (optional, up to 5)",
+        f"Select {team_label} Bench Players (optional, up to 10)",
         remaining_players,
-        max_selections=5,
+        max_selections=10,
         key=f"{team_label}_bench",
     )
 
